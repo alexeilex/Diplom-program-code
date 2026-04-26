@@ -1,81 +1,25 @@
 import numpy as np
 import scipy.sparse as sp
+import scipy.sparse.linalg as spla
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 
-def plot_solutions_3d(p_num, p_ex, Lx, Ly, scale_error=1.0):
-    # --- ЖЁСТКО приводим к numpy ---
-    if hasattr(p_num, "toarray"):
-        p_num = p_num.toarray()
-    p_num = np.asarray(p_num, dtype=float)
 
-    if hasattr(p_ex, "toarray"):
-        p_ex = p_ex.toarray()
-    p_ex = np.asarray(p_ex, dtype=float)
-
-    # Проверка формы
-    if p_num.shape != p_ex.shape:
-        raise ValueError(f"Shape mismatch: {p_num.shape} vs {p_ex.shape}")
-
-    Nx, Ny = p_num.shape
-
-    hx = Lx / Nx
-    hy = Ly / Ny
-
-    x = (np.arange(Nx) + 0.5) * hx
-    y = (np.arange(Ny) + 0.5) * hy
-
-    X, Y = np.meshgrid(x, y, indexing='ij')
-
-    error = p_num - p_ex
-
-    fig = plt.figure(figsize=(18, 5))
-
-    # Численное
-    ax1 = fig.add_subplot(131, projection='3d')
-    ax1.plot_surface(X, Y, p_num)
-    ax1.set_title("Numerical")
-
-    # Точное
-    ax2 = fig.add_subplot(132, projection='3d')
-    ax2.plot_surface(X, Y, p_ex)
-    ax2.set_title("Exact")
-
-    # Ошибка
-    ax3 = fig.add_subplot(133, projection='3d')
-    ax3.plot_surface(X, Y, scale_error * error)
-    ax3.set_title(f"Error x{scale_error}")
-
-    plt.tight_layout()
-    plt.show()
 def idx(i, j, Nx):
-    """
-    Нумерация неизвестных p[i,j] в один индекс:
-    k = i + j*Nx
-    i = 0..Nx-1, j = 0..Ny-1
-    """
     return i + j * Nx
 
 
 def build_system(Nx, Ny, Lx, Ly, P_in, P_out):
     """
-    Строит систему A p = b для задачи
-
-        Δ p = 0
-
-    на прямоугольнике [0, Lx] x [0, Ly] со следующими условиями:
-        p(0, y)   = P_in
-        p(Lx, y)  = P_out
-        ∂p/∂y = 0 на y=0 и y=Ly
-
-    Неизвестные p[i,j] расположены в центрах ячеек.
-    Схема ровно соответствует твоей записи:
-        ( (p_{i+1,j}-p_{i,j})/hx - (p_{i,j}-p_{i-1,j})/hx ) / hx
-      + ( (p_{i,j+1}-p_{i,j})/hy - (p_{i,j}-p_{i,j-1})/hy ) / hy
+    Δp = 0 на прямоугольнике.
+    По x: Dirichlet через ghost cells второго порядка:
+        p_{-1,j} = 2 P_in - p_{0,j}
+        p_{Nx,j} = 2 P_out - p_{Nx-1,j}
+    По y: Neumann 0 через отражение:
+        p_{i,-1} = p_{i,0}
+        p_{i,Ny} = p_{i,Ny-1}
     """
     hx = Lx / Nx
     hy = Ly / Ny
-
     ax = 1.0 / hx**2
     ay = 1.0 / hy**2
 
@@ -87,104 +31,71 @@ def build_system(Nx, Ny, Lx, Ly, P_in, P_out):
         for i in range(Nx):
             k = idx(i, j, Nx)
 
-            # -------------------
+            diag = -2.0 * ax - 2.0 * ay
+
             # x-направление
-            # -------------------
-            if Nx == 1:#тут поменять граничные условия потом
-                # Если одна колонка, то слева и справа одновременно границы
-                # Δ_x p = (P_out - 2 p + P_in)/hx^2
-                A[k, k] += -2.0 * ax
-                b[k] += -ax * (P_in + P_out)
-
-            elif i == 0:
-                # Левая граница:
-                # (p_{1,j} - 2 p_{0,j} + P_in) / hx^2
-                A[k, k] += -2.0 * ax+ 1.0*ax/2
-                A[k, idx(i + 1, j, Nx)] += ax
-                b[k] += -ax * P_in/2
-
-            elif i == Nx - 1:
-                # Правая граница:
-                # (P_out - 2 p_{Nx-1,j} + p_{Nx-2,j}) / hx^2
-                A[k, k] += -2.0 * ax+1.0*ax/2
-                A[k, idx(i - 1, j, Nx)] += ax
-                b[k] += -ax * P_out/2
-
+            if Nx == 1:
+                # обе границы одновременно
+                diag -= 2.0 * ax
+                b[k] -= 2.0 * ax * (P_in + P_out)
             else:
-                # Внутренняя точка
-                A[k, k] += -2.0 * ax
-                A[k, idx(i - 1, j, Nx)] += ax
-                A[k, idx(i + 1, j, Nx)] += ax
+                if i == 0:
+                    diag -= ax
+                    A[k, idx(i + 1, j, Nx)] += ax
+                    b[k] -= 2.0 * ax * P_in
+                elif i == Nx - 1:
+                    diag -= ax
+                    A[k, idx(i - 1, j, Nx)] += ax
+                    b[k] -= 2.0 * ax * P_out
+                else:
+                    A[k, idx(i - 1, j, Nx)] += ax
+                    A[k, idx(i + 1, j, Nx)] += ax
 
-            # -------------------
             # y-направление
-            # -------------------
             if Ny == 1:
-                # Одна строка по y: вклад по y отсутствует
-                pass
-
-            elif j == 0:
-                # Нижняя граница: ∂p/∂y = 0
-                # (p_{i,1} - p_{i,0}) / hy^2
-                A[k, k] += -1.0 * ay
-                A[k, idx(i, j + 1, Nx)] += ay
-
-            elif j == Ny - 1:
-                # Верхняя граница: ∂p/∂y = 0
-                # (p_{i,Ny-2} - p_{i,Ny-1}) / hy^2
-                A[k, k] += -1.0 * ay
-                A[k, idx(i, j - 1, Nx)] += ay
-
+                # обе Neumann-границы одновременно => вклад по y = 0
+                diag += 2.0 * ay
             else:
-                # Внутренняя точка
-                A[k, k] += -2.0 * ay
-                A[k, idx(i, j - 1, Nx)] += ay
-                A[k, idx(i, j + 1, Nx)] += ay
+                if j == 0:
+                    diag += ay
+                    A[k, idx(i, j + 1, Nx)] += ay
+                elif j == Ny - 1:
+                    diag += ay
+                    A[k, idx(i, j - 1, Nx)] += ay
+                else:
+                    A[k, idx(i, j - 1, Nx)] += ay
+                    A[k, idx(i, j + 1, Nx)] += ay
+
+            A[k, k] += diag
 
     return A.tocsr(), b, hx, hy
 
 
-def discrete_exact_solution(Nx, Ny, P_in, P_out):
-    """
-    Точное решение именно ДИСКРЕТНОЙ задачи для этой постановки.
+def solve_system(Nx, Ny, Lx, Ly, P_in, P_out):
+    A, b, hx, hy = build_system(Nx, Ny, Lx, Ly, P_in, P_out)
+    p_vec = spla.spsolve(A, b)
+    p = p_vec.reshape((Nx, Ny), order="F")
+    return A, b, p, hx, hy
 
-    Для каждой строки по y решение одинаковое:
-        p_i = ((Nx - i) * P_in + (i + 1) * P_out) / (Nx + 1)
 
-    Это удовлетворяет A p = b для собранной выше схемы.
+def discrete_exact_solution(Nx, Ny, Lx, Ly, P_in, P_out):
     """
-    x_vals = np.array([
-        ((Nx - i) * P_in + (i + 1) * P_out) / (Nx + 1)
-        for i in range(Nx)
-    ], dtype=float)
-    p = np.repeat(x_vals[:, None], Ny, axis=1)
+    Для этой схемы точное дискретное решение совпадает с линейной функцией
+    в центрах ячеек.
+    """
+    hx = Lx / Nx
+    x = (np.arange(Nx) + 0.5) * hx
+    p_x = P_in + (P_out - P_in) * (x / Lx)
+    p = np.repeat(p_x[:, None], Ny, axis=1)
     return p
 
 
 def continuous_exact_solution(Nx, Ny, Lx, Ly, P_in, P_out):
-    """
-    Точное решение непрерывной задачи:
-        p(x, y) = P_in + (P_out - P_in) * x / Lx
-    на центрах ячеек.
-    """
     hx = Lx / Nx
     x = (np.arange(Nx) + 0.5) * hx
-    p = P_in + (P_out - P_in) * (x[:, None] / Lx)
-    p = np.repeat(p, Ny, axis=1)
+    p_x = P_in + (P_out - P_in) * (x / Lx)
+    p = np.repeat(p_x[:, None], Ny, axis=1)
     return p
-
-
-def residual_norm(A, p):
-    """
-    Норма невязки ||A p - b||_∞ и ||A p - b||_2,
-    если b уже известен снаружи.
-    """
-    raise NotImplementedError("Use residual_norm_with_rhs(A, p, b)")
-
-
-def residual_norm_with_rhs(A, p, b):
-    r = A @ p.reshape(-1, order="F") - b
-    return np.max(np.abs(r)), np.sqrt(np.mean(r**2))
 
 
 def error_norms(p_num, p_ex):
@@ -196,27 +107,16 @@ def error_norms(p_num, p_ex):
 
 
 def run_case(Nx, Ny, Lx, Ly, P_in, P_out, print_matrix=False):
-    A, b, hx, hy = build_system(Nx, Ny, Lx, Ly, P_in, P_out)
+    A, b, p_num, hx, hy = solve_system(Nx, Ny, Lx, Ly, P_in, P_out)
+    p_ex = discrete_exact_solution(Nx, Ny, Lx, Ly, P_in, P_out)
 
-    # Дискретно-точное решение для этой постановки
-    p_num = discrete_exact_solution(Nx, Ny, P_in, P_out)
-
-    # Непрерывное точное решение (линейная функция)
-    p_ex = continuous_exact_solution(Nx, Ny, Lx, Ly, P_in, P_out)
-
-    # Невязка именно для собранной матрицы
-    res_inf, res_rms = residual_norm_with_rhs(A, p_num, b)
-
-    # Ошибка относительно непрерывного решения
     max_err, l2_err, rel_l2_err = error_norms(p_num, p_ex)
 
     print(f"\nСетка {Nx}x{Ny}")
     print(f"hx = {hx:.6e}, hy = {hy:.6e}")
-    #print(f"residual inf-norm = {res_inf:.6e}")
-    #print(f"residual rms      = {res_rms:.6e}")
-    print(f"max error         = {max_err:.6e}")
-    #print(f"L2 error          = {l2_err:.6e}")
-    #print(f"relative L2       = {rel_l2_err:.6e}")
+    print(f"max error   = {max_err:.6e}")
+    print(f"L2 error    = {l2_err:.6e}")
+    print(f"rel L2      = {rel_l2_err:.6e}")
 
     if print_matrix:
         np.set_printoptions(precision=3, suppress=True)
@@ -224,9 +124,9 @@ def run_case(Nx, Ny, Lx, Ly, P_in, P_out, print_matrix=False):
         print(A.toarray())
         print("\nb =")
         print(b)
-        print("\nDiscrete exact solution p_num =")
+        print("\np_num =")
         print(p_num)
-        print("\nContinuous exact solution p_ex =")
+        print("\np_ex =")
         print(p_ex)
 
     return A, b, p_num, p_ex
@@ -237,13 +137,6 @@ if __name__ == "__main__":
     Ly = 2.0
     P_in = 1.0
     P_out = 2.0
-
-    # Маленькая сетка: здесь удобно сверять матрицу вручную
-    A, b,p_num, p_ex = run_case(30, 20, Lx, Ly, P_in, P_out,print_matrix=False)
-    plot_solutions_3d(p_num, p_ex, Lx, Ly, scale_error=1)
-    # Проверка на другой ориентации
-    run_case(3, 2, Lx, Ly, P_in, P_out, print_matrix=True)
-
-    # Более крупные сетки
-    for Nx, Ny in [(30, 20), (300, 200)]:
-        run_case(Nx, Ny, Lx, Ly, P_in, P_out, print_matrix=False)
+    
+for Nx, Ny in [(3, 2), (30, 20), (300, 200)]:
+    run_case(Nx, Ny, Lx, Ly, P_in, P_out, print_matrix=False)
