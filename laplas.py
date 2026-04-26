@@ -3,77 +3,105 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 import matplotlib.pyplot as plt
 
-# ----------------------------------------------------------------------
-# Построение системы для криволинейной области
-# ----------------------------------------------------------------------
-def build_system_curved(Nx, Ny, Lx, Ly, P_in, P_out, f_bottom, f_top):
+
+# ==============================================================================
+# Сборка матрицы для задачи Δp = 0 в криволинейной области
+# ==============================================================================
+def build_system_curved(Nx, Ny, Lx, Ly, f_bottom, f_top,
+                        P_left_func=None, P_right_func=None,
+                        P_in=None, P_out=None):
     """
-    Строит A p = b для активных ячеек криволинейной области.
-    f_bottom(x) и f_top(x) — функции, задающие нижнюю и верхнюю границы.
+    Строит систему A p = b для активных ячеек криволинейной области.
+
+    Параметры:
+    ----------
+    Nx, Ny : int
+        количество ячеек по x и y.
+    Lx, Ly : float
+        размеры расчётной области (прямоугольная сетка).
+    f_bottom, f_top : callable
+        функции одной переменной x, задающие нижнюю и верхнюю границы области.
+    P_left_func, P_right_func : callable (или None)
+        функции давления на левой (x=0) и правой (x=Lx) границах.
+        Если не заданы, используются постоянные значения P_in и P_out.
+    P_in, P_out : float
+        постоянные давления на левой и правой границах (используются,
+        если P_left_func / P_right_func не переданы).
     """
+    # Если функции давления не заданы, создаём константные
+    if P_left_func is None:
+        P_left_func = lambda y: P_in
+    if P_right_func is None:
+        P_right_func = lambda y: P_out
+
     hx = Lx / Nx
     hy = Ly / Ny
     ax = 1.0 / hx**2
     ay = 1.0 / hy**2
 
-    # Координаты центров ячеек
+    # Центры ячеек
     x_centers = (np.arange(Nx) + 0.5) * hx
     y_centers = (np.arange(Ny) + 0.5) * hy
 
-    # Маска активных ячеек
+    # Маска активных ячеек (центр строго внутри области)
     inside = np.zeros((Nx, Ny), dtype=bool)
     for i in range(Nx):
         for j in range(Ny):
-            y_bottom = f_bottom(x_centers[i])
-            y_top = f_top(x_centers[i])
-            if y_bottom < y_centers[j] < y_top:
+            yb = f_bottom(x_centers[i])
+            yt = f_top(x_centers[i])
+            if yb < y_centers[j] < yt:
                 inside[i, j] = True
 
-    # Перенумерация активных ячеек
+    # Нумерация только активных ячеек
     idx_map = -np.ones((Nx, Ny), dtype=int)
-    active = np.argwhere(inside)  # массив пар (i, j)
+    active = np.argwhere(inside)
     for k, (i, j) in enumerate(active):
         idx_map[i, j] = k
-    N = len(active)
+    N_active = len(active)
 
-    # Разреженная матрица и правая часть
-    A = sp.lil_matrix((N, N), dtype=float)
-    b = np.zeros(N, dtype=float)
+    A = sp.lil_matrix((N_active, N_active), dtype=float)
+    b = np.zeros(N_active, dtype=float)
 
     for (i, j) in active:
         k = idx_map[i, j]
         diag = -2.0 * ax - 2.0 * ay
 
-        # Левый сосед
+        # --- горизонтальные соседи (ось x) ---
+        # левый сосед
         if i - 1 >= 0:
             if inside[i-1, j]:
                 A[k, idx_map[i-1, j]] += ax
             else:
-                diag += ax          # Нейман (отражение)
+                diag += ax          # твёрдая стенка (Нейман)
         else:                       # открытая левая граница
+            yj = y_centers[j]
+            p_val = P_left_func(yj)
             diag -= ax
-            b[k] -= 2.0 * ax * P_in
+            b[k] -= 2.0 * ax * p_val
 
-        # Правый сосед
+        # правый сосед
         if i + 1 < Nx:
             if inside[i+1, j]:
                 A[k, idx_map[i+1, j]] += ax
             else:
                 diag += ax
         else:                       # открытая правая граница
+            yj = y_centers[j]
+            p_val = P_right_func(yj)
             diag -= ax
-            b[k] -= 2.0 * ax * P_out
+            b[k] -= 2.0 * ax * p_val
 
-        # Нижний сосед
+        # --- вертикальные соседи (ось y) ---
+        # нижний сосед
         if j - 1 >= 0:
             if inside[i, j-1]:
                 A[k, idx_map[i, j-1]] += ay
             else:
-                diag += ay          # Нейман
+                diag += ay          # твёрдая стенка (Нейман)
         else:
-            diag += ay              # на всякий случай, если вдруг дошли до y=0
+            diag += ay
 
-        # Верхний сосед
+        # верхний сосед
         if j + 1 < Ny:
             if inside[i, j+1]:
                 A[k, idx_map[i, j+1]] += ay
@@ -87,13 +115,25 @@ def build_system_curved(Nx, Ny, Lx, Ly, P_in, P_out, f_bottom, f_top):
     return A.tocsr(), b, hx, hy, inside, x_centers, y_centers
 
 
-def solve_curved(Nx, Ny, Lx, Ly, P_in, P_out, f_bottom, f_top):
+# ==============================================================================
+# Решение задачи
+# ==============================================================================
+def solve_curved(Nx, Ny, Lx, Ly, f_bottom, f_top,
+                 P_left_func=None, P_right_func=None,
+                 P_in=None, P_out=None):
+    """
+    Решает уравнение Лапласа в криволинейной области.
+    Возвращает:
+        A, b, p_active, p_full, inside, xc, yc
+    p_full – (Nx, Ny) массив, неактивные ячейки заполнены NaN.
+    """
     A, b, hx, hy, inside, xc, yc = build_system_curved(
-        Nx, Ny, Lx, Ly, P_in, P_out, f_bottom, f_top
+        Nx, Ny, Lx, Ly, f_bottom, f_top,
+        P_left_func, P_right_func, P_in, P_out
     )
     p_active = spla.spsolve(A, b)
 
-    # Восстановление на полной сетке (NaN для неактивных)
+    # Восстановление полного поля
     p_full = np.full((Nx, Ny), np.nan)
     for k, (i, j) in enumerate(np.argwhere(inside)):
         p_full[i, j] = p_active[k]
@@ -101,94 +141,33 @@ def solve_curved(Nx, Ny, Lx, Ly, P_in, P_out, f_bottom, f_top):
     return A, b, p_active, p_full, inside, xc, yc
 
 
-# ----------------------------------------------------------------------
-# Точные решения (линейная функция по x) для прямоугольной области
-# ----------------------------------------------------------------------
-def discrete_exact_solution(Nx, Ny, Lx, Ly, P_in, P_out):
-    """Точное дискретное решение для полной прямоугольной сетки."""
-    hx = Lx / Nx
-    x = (np.arange(Nx) + 0.5) * hx
-    p_x = P_in + (P_out - P_in) * (x / Lx)
-    p = np.repeat(p_x[:, None], Ny, axis=1)
-    return p
-
-
-def continuous_exact_solution(Nx, Ny, Lx, Ly, P_in, P_out):
-    """Непрерывное точное решение (линейная функция)."""
-    hx = Lx / Nx
-    x = (np.arange(Nx) + 0.5) * hx
-    p_x = P_in + (P_out - P_in) * (x / Lx)
-    p = np.repeat(p_x[:, None], Ny, axis=1)
-    return p
-
-
-# ----------------------------------------------------------------------
-# Вычисление ошибок
-# ----------------------------------------------------------------------
+# ==============================================================================
+# Вычисление ошибок (только для активных ячеек)
+# ==============================================================================
 def error_norms(p_num, p_ex):
-    """Считает ошибки только по конечным значениям (не NaN)."""
+    """
+    Сравнение численного и точного решений.
+    Возвращает (максимальная ошибка, L2-ошибка, относительная L2-ошибка).
+    """
     mask = ~np.isnan(p_num)
     err = p_num[mask] - p_ex[mask]
-    max_err = np.max(np.abs(err)) if len(err) > 0 else 0.0
-    l2_err = np.sqrt(np.mean(err**2)) if len(err) > 0 else 0.0
-    rel_l2_err = l2_err / max(1e-14, np.sqrt(np.mean(p_ex[mask]**2)))
-    return max_err, l2_err, rel_l2_err
+    if len(err) == 0:
+        return 0.0, 0.0, 0.0
+    max_err = np.max(np.abs(err))
+    l2_err = np.sqrt(np.mean(err**2))
+    rel_l2 = l2_err / max(1e-14, np.sqrt(np.mean(p_ex[mask]**2)))
+    return max_err, l2_err, rel_l2
 
 
-# ----------------------------------------------------------------------
-# Запуск одного расчёта
-# ----------------------------------------------------------------------
-def run_case(Nx, Ny, Lx, Ly, P_in, P_out, f_bottom=None, f_top=None, print_matrix=False):
+# ==============================================================================
+# Визуализация
+# ==============================================================================
+def plot_pressure(p_full, Lx, Ly, f_bottom, f_top, title="Давление"):
     """
-    Расчёт давления в криволинейной области.
-    Если f_bottom и f_top не заданы, используются прямые стенки y=0 и y=Ly.
-    """
-    if f_bottom is None:
-        f_bottom = lambda x: 0.0
-    if f_top is None:
-        f_top = lambda x: Ly
-
-    A, b, p_active, p_full, inside, xc, yc = solve_curved(
-        Nx, Ny, Lx, Ly, P_in, P_out, f_bottom, f_top
-    )
-
-    # Точное решение для полной сетки (линейное по x)
-    p_ex = continuous_exact_solution(Nx, Ny, Lx, Ly, P_in, P_out)
-
-    # Сравнение только в активных ячейках
-    max_err, l2_err, rel_l2_err = error_norms(p_full, p_ex)
-
-    print(f"\nСетка {Nx}x{Ny}")
-    print(f"Активных ячеек: {np.sum(inside)} из {Nx*Ny}")
-    print(f"hx = {Lx/Nx:.6e}, hy = {Ly/Ny:.6e}")
-    print(f"max error   = {max_err:.6e}")
-    print(f"L2 error    = {l2_err:.6e}")
-    print(f"rel L2      = {rel_l2_err:.6e}")
-
-    if print_matrix:
-        np.set_printoptions(precision=3, suppress=True)
-        print("\nA =")
-        print(A.toarray())
-        print("\nb =")
-        print(b)
-        print("\np_active =")
-        print(p_active)
-        print("\np_full =")
-        print(p_full)
-        print("\np_ex =")
-        print(p_ex)
-
-    return A, b, p_full, p_ex
-
-def plot_pressure(p_full, Lx, Ly, f_bottom, f_top, title="Давление в канале"):
-    """
-    Визуализация поля давления p_full.
-    p_full: (Nx, Ny) массив, NaN для неактивных ячеек.
-    f_bottom, f_top: функции границ.
+    Рисует поле давления p_full (неактивные ячейки = NaN).
     """
     Nx, Ny = p_full.shape
     xc = (np.arange(Nx) + 0.5) * (Lx / Nx)
-    yc = (np.arange(Ny) + 0.5) * (Ly / Ny)
     x_edges = np.linspace(0, Lx, Nx + 1)
     y_edges = np.linspace(0, Ly, Ny + 1)
 
@@ -201,28 +180,105 @@ def plot_pressure(p_full, Lx, Ly, f_bottom, f_top, title="Давление в к
     plt.xlabel('x')
     plt.ylabel('y')
     plt.legend()
-    plt.show()
-    plt.savefig('plot.png', dpi=150, bbox_inches='tight')
-    print("Plot saved as plot.png")
-# ----------------------------------------------------------------------
-# Основной блок
-# ----------------------------------------------------------------------
-if __name__ == "__main__":
+    plt.tight_layout()
+    plt.savefig(title, dpi=150, bbox_inches='tight')
+    print("Plot saved as " + title)
+
+
+# ==============================================================================
+# Тесты
+# ==============================================================================
+def horizontal_test():
+    # -------------------------------
+    # Тест 1: Прямоугольная область
+    # -------------------------------
+    print("=== Тест 1: Прямые горизонтальные стенки ===")
     Lx = 3.0
     Ly = 2.0
     P_in = 1.0
     P_out = 2.0
+    f_bottom_rect = lambda x: np.zeros_like(x)
+    f_top_rect    = lambda x: np.full_like(x, Ly)
 
-    # 1. Проверка на прямых границах (должна совпадать со старым кодом)
- #   print("=== Прямые границы (f_bottom=0, f_top=Ly) ===")
-  #  for Nx, Ny in [(3, 2), (30, 20), (300, 200)]:
-   #     run_case(Nx, Ny, Lx, Ly, P_in, P_out)
-
-    # 2. Пример с криволинейными границами
-    print("\n=== Криволинейные границы(параллелограмм) ===")
-    f_bottom = lambda x: 4.0/3.0*x
-    f_top = lambda x: 4.0/3.0 * x+1.0
     for Nx, Ny in [(3, 2), (30, 20), (300, 200)]:
-        A, b, p_full, p_ex = run_case(Nx, Ny, Lx, Ly, P_in, P_out, f_bottom, f_top, print_matrix=False)
-# Визуализация
-plot_pressure(p_full, Lx, Ly, f_bottom, f_top, title="Давление в криволинейном канале")
+        A, b, p_act, p_full, inside, xc, yc = solve_curved(
+            Nx, Ny, Lx, Ly, f_bottom_rect, f_top_rect,
+            P_in=P_in, P_out=P_out
+        )
+        # Точное решение (линейное по x)
+        Xc, Yc = np.meshgrid(xc, yc, indexing='ij')
+        p_ex = P_in + (P_out - P_in) * (Xc / Lx)
+
+        max_err, l2_err, rel_l2 = error_norms(p_full, p_ex)
+        print(f"Сетка {Nx}x{Ny}: активных {np.sum(inside)}, "
+              f"max err = {max_err:.2e}, L2 err = {l2_err:.2e}")
+
+    # Визуализация последней сетки
+    plot_pressure(p_full, Lx, Ly, f_bottom_rect, f_top_rect,
+                  title="Прямоугольная_область.png")
+def paralelogram_test():
+    # -------------------------------
+    # Тест 2: Параллелограмм
+    # -------------------------------
+    print("\n=== Тест 2: Параллелограмм (наклонные стенки) ===")
+    Lx = 3.0
+    Ly = 5.0               # чтобы вместить наклон
+
+    # Граничные кривые
+    f_bottom_par = lambda x: (4/3) * x
+    f_top_par    = lambda x: (4/3) * x + 1.0
+
+    # Точное линейное решение: p(x,y) = (3x + 4y)/25
+    p_exact_func = lambda x, y: (3*x + 4*y) / 25.0
+
+    # Граничные давления на левой и правой границах
+    P_left_func  = lambda y: p_exact_func(0, y)    # 4y/25
+    P_right_func = lambda y: p_exact_func(Lx, y)   # (9+4y)/25
+
+    for Nx, Ny in [(30, 50), (60, 100), (120, 200)]:
+        A, b, p_act, p_full, inside, xc, yc = solve_curved(
+            Nx, Ny, Lx, Ly, f_bottom_par, f_top_par,
+            P_left_func=P_left_func,
+            P_right_func=P_right_func
+        )
+        # Точное поле на центрах ячеек
+        Xc, Yc = np.meshgrid(xc, yc, indexing='ij')
+        p_ex = p_exact_func(Xc, Yc)
+
+        max_err, l2_err, rel_l2 = error_norms(p_full, p_ex)
+        print(f"Сетка {Nx}x{Ny}: активных {np.sum(inside)}, "
+              f"max err = {max_err:.2e}, L2 err = {l2_err:.2e}")
+
+
+if __name__ == "__main__":
+    print("\n=== Тест 3: Синусоидальный канал ===")
+
+    wm = 1e-3        # механическая ширина
+    delta = 0.8
+    Lw = 1.25e-3
+    Lx = 10e-3       # длина канала
+
+    # Сдвигаем геометрию так, чтобы она находилась полностью в [0, Ly]
+    Ly = 3.2e-3      # чуть больше максимальной ширины
+    shift = Ly / 2   # 0.6e-3
+
+    f_bottom = lambda x: shift - 0.5 * wm * (1 + delta * np.sin(2 * np.pi * x / Lw))
+    f_top    = lambda x: shift + 0.5 * wm * (1 + delta * np.sin(2 * np.pi * x / Lw))
+
+    # Граничные давления
+    P_in = 1.0
+    P_out = 2.0
+
+    # Размер сетки (возьмём умеренный)
+    Nx = 100
+    Ny = 20
+
+    A, b, p_act, p_full, inside, xc, yc = solve_curved(
+        Nx, Ny, Lx, Ly, f_bottom, f_top,
+        P_in=P_in, P_out=P_out
+    )
+
+    print(f"Активных ячеек: {np.sum(inside)} из {Nx*Ny}")
+
+    # Визуализация
+    plot_pressure(p_full, Lx, Ly, f_bottom, f_top, title="синусоида.png")
