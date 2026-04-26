@@ -90,7 +90,7 @@ def build_system(Nx, Ny, Lx, Ly, P_in, P_out):
             # -------------------
             # x-направление
             # -------------------
-            if Nx == 1:
+            if Nx == 1:#тут поменять граничные условия потом
                 # Если одна колонка, то слева и справа одновременно границы
                 # Δ_x p = (P_out - 2 p + P_in)/hx^2
                 A[k, k] += -2.0 * ax
@@ -99,16 +99,16 @@ def build_system(Nx, Ny, Lx, Ly, P_in, P_out):
             elif i == 0:
                 # Левая граница:
                 # (p_{1,j} - 2 p_{0,j} + P_in) / hx^2
-                A[k, k] += -2.0 * ax
+                A[k, k] += -2.0 * ax+ 1.0*ax/2
                 A[k, idx(i + 1, j, Nx)] += ax
-                b[k] += -ax * P_in
+                b[k] += -ax * P_in/2
 
             elif i == Nx - 1:
                 # Правая граница:
                 # (P_out - 2 p_{Nx-1,j} + p_{Nx-2,j}) / hx^2
-                A[k, k] += -2.0 * ax
+                A[k, k] += -2.0 * ax+1.0*ax/2
                 A[k, idx(i - 1, j, Nx)] += ax
-                b[k] += -ax * P_out
+                b[k] += -ax * P_out/2
 
             else:
                 # Внутренняя точка
@@ -239,10 +239,10 @@ if __name__ == "__main__":
     P_out = 2.0
 
     # Маленькая сетка: здесь удобно сверять матрицу вручную
-    A, b,p_num, p_ex = run_case(30, 20, Lx, Ly, P_in, P_out,print_matrix=True)
+    A, b,p_num, p_ex = run_case(30, 20, Lx, Ly, P_in, P_out,print_matrix=False)
     plot_solutions_3d(p_num, p_ex, Lx, Ly, scale_error=1)
     # Проверка на другой ориентации
-    run_case(2, 3, Lx, Ly, P_in, P_out, print_matrix=False)
+    run_case(3, 2, Lx, Ly, P_in, P_out, print_matrix=True)
 
     # Более крупные сетки
     for Nx, Ny in [(30, 20), (300, 200)]:
