@@ -251,6 +251,7 @@ def paralelogram_test():
 
 
 if __name__ == "__main__":
+    paralelogram_test()
     print("\n=== Тест 3: Синусоидальный канал ===")
 
     wm = 1e-3        # механическая ширина
