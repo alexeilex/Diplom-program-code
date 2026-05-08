@@ -17,7 +17,7 @@ p_x_cfd = np.array([np.mean(p_cfd[x_cfd == x]) for x in unique_x])
 # Параметры канала из статьи (форма "а", файл 39_div.plt)
 wm = 1e-3                # механическая ширина
 delta = 0.8              # безразмерная амплитуда
-Lw = 1.25e-3             # период шероховатости
+Lw = 1.25e-2           # период шероховатости
 Lx = unique_x[-1] - unique_x[0]   # длина области по X
 
 # Граничные давления из эталона
@@ -33,14 +33,14 @@ print(f"Pin = {Pin_cfd:.3f} Па, Pout = {Pout_cfd:.3f} Па")
 
 # Геометрия для вашего решателя (со сдвигом, чтобы все y>0)
 # В эталоне z от -0.00075 до +0.00075, центр 0. Сдвинем на 0.001, чтобы нижняя граница стала >0
-shift = 1e-3
-f_bottom = lambda x: shift - 0.5 * wm * (1 + delta * np.sin(2 * np.pi * x / Lw))
-f_top    = lambda x: shift + 0.5 * wm * (1 + delta * np.sin(2 * np.pi * x / Lw))
 
-Ly = 2e-3                # от 0 до 2e-3, чтобы охватить сдвинутую геометрию
+Ly = 3.2e-3      # чуть больше максимальной ширины
 Nx = 100                 # число ячеек по x
 Ny = 40                  # по y
 
+shift = Ly / 2
+f_bottom = lambda x: shift - 0.5 * wm * (1 + delta * np.sin(2 * np.pi * x / Lw))
+f_top    = lambda x: shift + 0.5 * wm * (1 + delta * np.sin(2 * np.pi * x / Lw))
 # Запуск вашего решателя с эталонными граничными давлениями
 A, b, p_act, p_full, inside, xc, yc = solve_curved(
     Nx, Ny, Lx, Ly, f_bottom, f_top,
@@ -72,3 +72,4 @@ max_err = np.max(np.abs(error))
 rmse = np.sqrt(np.mean(error**2))
 print(f"Максимальная разница: {max_err:.3f} Па")
 print(f"Среднеквадратичная ошибка: {rmse:.3f} Па")
+print(f"Ошибка в процентах относительно перепада: {max_err/(Pin_cfd-Pout_cfd) *100:.6f}%")

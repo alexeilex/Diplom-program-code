@@ -249,15 +249,189 @@ def paralelogram_test():
         print(f"Сетка {Nx}x{Ny}: активных {np.sum(inside)}, "
               f"max err = {max_err:.2e}, L2 err = {l2_err:.2e}")
 
+def hyperbolic_channel_test():
+    """
+    Тест: гиперболический канал, ограниченный линиями тока z^2 (y = C/(2x)).
+    Аналитическое решение: p(x,y) = x^2 - y^2, на стенках ∂p/∂n = 0.
+    """
+    print("\n=== Тест: гиперболический канал (аналитическое решение z²) ===")
 
-if __name__ == "__main__":
-    paralelogram_test()
+    # Константы линий тока
+    C_bottom = 1.0
+    C_top = 2.0
+
+    # Интервал по x: [x_left, x_right]
+    x_left = 0.8
+    x_right = 2.0
+    Lx = x_right - x_left
+
+    # Определим вертикальные границы, чтобы кривые поместились в [0, Ly]
+    y_min = C_bottom / (2.0 * x_right)   # минимальная y (на правом краю)
+    y_max = C_top / (2.0 * x_left)       # максимальная y (на левом краю)
+    Ly = y_max * 1.05                    # небольшой запас сверху
+
+    # Функции границ (принимают локальный x ∈ [0, Lx])
+    def f_bottom(x_loc):
+        x_orig = x_loc + x_left
+        return C_bottom / (2.0 * x_orig)
+
+    def f_top(x_loc):
+        x_orig = x_loc + x_left
+        return C_top / (2.0 * x_orig)
+
+    # Аналитическое решение (в физических координатах)
+    def p_exact(x_orig, y):
+        return x_orig**2 - y**2
+
+    # Граничные давления на левом и правом срезах (вертикальные линии)
+    def P_left(y):
+        return p_exact(x_left, y)
+
+    def P_right(y):
+        return p_exact(x_right, y)
+
+    # Тестовые сетки
+    for Nx, Ny in [(40, 30), (80, 60), (160, 120)]:
+        A, b, p_act, p_full, inside, xc, yc = solve_curved(
+            Nx, Ny, Lx, Ly,
+            f_bottom, f_top,
+            P_left_func=P_left,
+            P_right_func=P_right
+        )
+
+        # Координаты центров ячеек в физической системе
+        Xc_phys = xc + x_left          # (Nx,)
+        Yc_phys = yc                   # (Ny,) – уже в физической системе
+        Xg, Yg = np.meshgrid(Xc_phys, Yc_phys, indexing='ij')
+        p_ex = p_exact(Xg, Yg)
+
+        max_err, l2_err, rel_l2 = error_norms(p_full, p_ex)
+        print(f"Сетка {Nx}x{Ny}: активных {np.sum(inside)}, "
+              f"max err = {max_err:.2e}, L2 err = {l2_err:.2e}")
+
+    # Визуализация для средней сетки
+    Nx, Ny = 80, 60
+    A, b, p_act, p_full, inside, xc, yc = solve_curved(
+        Nx, Ny, Lx, Ly, f_bottom, f_top,
+        P_left_func=P_left, P_right_func=P_right
+    )
+
+#    import matplotlib.pyplot as plt
+    x_edges = np.linspace(0, Lx, Nx+1) + x_left
+    y_edges = np.linspace(0, Ly, Ny+1)
+    plt.figure(figsize=(8, 4))
+    plt.pcolormesh(x_edges, y_edges, p_full.T, shading='flat', cmap='viridis')
+    plt.colorbar(label='p')
+    x_plot = np.linspace(0, Lx, 200) + x_left
+    plt.plot(x_plot, f_bottom(x_plot - x_left), 'k', lw=2, label='bottom')
+    plt.plot(x_plot, f_top(x_plot - x_left), 'k', lw=2, label='top')
+    plt.title('Гиперболический канал (z²)')
+    plt.xlabel('x')
+    plt.ylabel('y')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig('hyperbolic_channel.png', dpi=150)
+    print("Plot saved as hyperbolic_channel.png")
+
+def converging_diverging_channel_test():
+    """
+    Тест: канал с верхней прямой y = a*x + offset_up
+          и нижней прямой y = -a*x + offset_bottom (offset_bottom = offset_up - 1).
+    Аналитическое решение: p(x,y) = ln( (x - x0)^2 + (y - y0)^2 ),
+    где (x0, y0) – точка пересечения граничных прямых (особенность вне области).
+    """
+    print("\n=== Тест: сходящийся/расходящийся канал (аналитика ln(r)) ===")
+    a = 1.0                # наклон верхней стенки
+    offset_up = 2.0        # верхняя прямая: y = x + 2
+    offset_bottom = offset_up - 1.0   # нижняя: y = -x + 1 (сдвиг на 1 вниз при x=0)
+
+    # Точка пересечения
+    x0 = (offset_bottom - offset_up) / (2 * a)   # для a=1, offset_up=2 → -0.5
+    y0 = a * x0 + offset_up                      # y0 = 1.5
+
+    Lx = 2.0               # длина канала (точка пересечения x0 < 0)
+    # Подбираем Ly так, чтобы границы поместились
+    y_max = a * Lx + offset_up           # верх при x=Lx
+    y_min = -a * Lx + offset_bottom      # низ при x=Lx (может быть и ниже)
+    Ly = max(y_max, offset_up) + 0.2     # запас, чтобы y_min>=0? Проверим: нужно y_min >=0. offset_bottom=1, при Lx=2, y_min = -2+1 = -1, отрицательное. Значит, сдвигаем всё вверх.
+    # Проще: сдвинем геометрию, чтобы нижняя граница была >= 0. Добавим сдвиг shift.
+    shift = max(0.0, -y_min) + 0.1
+    y0_shifted = y0 + shift
+    # Переопределим граничные функции с учётом сдвига
+    def f_bottom(x):
+        return -a * x + offset_bottom + shift
+    def f_top(x):
+        return a * x + offset_up + shift
+    # Обновлённый Ly
+    Ly = a * Lx + offset_up + shift + 0.2
+
+    # Граничные давления на левой и правой вертикальных границах
+    def P_left(y):
+        # p_exact(0, y) = ln( (0 - x0)^2 + ((y - shift) - y0)^2 )
+        dy = (y - shift) - y0
+        return np.log(x0**2 + dy**2)   # x0 отрицательное, но в квадрате
+
+    def P_right(y):
+        # p_exact(Lx, y) = ln( (Lx - x0)^2 + ((y - shift) - y0)^2 )
+        dx = Lx - x0
+        dy = (y - shift) - y0
+        return np.log(dx**2 + dy**2)
+
+    # Точное решение на всей сетке (для проверки)
+    def p_exact_func(x_mesh, y_mesh):
+        # x_mesh, y_mesh – координаты центров ячеек в исходной системе (без shift)
+        # Учтём, что y в расчётной области = y_phys + shift? 
+        # У нас f_bottom и f_top принимают x физический и возвращают y с учётом shift.
+        # В сетке координаты yc заданы в [0, Ly], где Ly включает shift.
+        # Физическая координата y_phys = yc, потому что мы сдвинули стенки.
+        # Значит, в формуле p_exact нужно использовать yc (не вычитая shift), а точка y0 должна быть в той же сдвинутой системе.
+        # Удобнее: перенесём точку пересечения в сдвинутую систему.
+        y0_eff = y0 + shift
+        return np.log((x_mesh - x0)**2 + (y_mesh - y0_eff)**2)
+
+    # Тестовые сетки
+    for Nx, Ny in [(40, 60), (80, 120), (160, 240)]:
+        A, b, p_act, p_full, inside, xc, yc = solve_curved(
+            Nx, Ny, Lx, Ly, f_bottom, f_top,
+            P_left_func=P_left,
+            P_right_func=P_right
+        )
+        Xg, Yg = np.meshgrid(xc, yc, indexing='ij')
+        p_ex = p_exact_func(Xg, Yg)
+
+        max_err, l2_err, rel_l2 = error_norms(p_full, p_ex)
+        print(f"Сетка {Nx}x{Ny}: активных {np.sum(inside)}, "
+              f"max err = {max_err:.2e}, L2 err = {l2_err:.2e}")
+
+    # Визуализация для средней сетки
+    Nx, Ny = 80, 120
+    A, b, p_act, p_full, inside, xc, yc = solve_curved(
+        Nx, Ny, Lx, Ly, f_bottom, f_top,
+        P_left_func=P_left,
+        P_right_func=P_right
+    )
+    x_edges = np.linspace(0, Lx, Nx+1)
+    y_edges = np.linspace(0, Ly, Ny+1)
+    plt.figure(figsize=(8, 5))
+    plt.pcolormesh(x_edges, y_edges, p_full.T, shading='flat', cmap='viridis')
+    plt.colorbar(label='p')
+    x_plot = np.linspace(0, Lx, 200)
+    plt.plot(x_plot, f_top(x_plot), 'k', lw=2, label='top')
+    plt.plot(x_plot, f_bottom(x_plot), 'k', lw=2, label='bottom')
+    plt.title('Канал с наклонными непараллельными стенками (ln(r))')
+    plt.xlabel('x')
+    plt.ylabel('y')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig('converging_channel.png', dpi=150)
+    print("Plot saved as converging_channel.png")
+def sin_test():
     print("\n=== Тест 3: Синусоидальный канал ===")
 
     wm = 1e-3        # механическая ширина
     delta = 0.8
     Lw = 1.25e-3
-    Lx = 10e-3       # длина канала
+    Lx = 1.25e-3      # длина канала
 
     # Сдвигаем геометрию так, чтобы она находилась полностью в [0, Ly]
     Ly = 3.2e-3      # чуть больше максимальной ширины
@@ -267,12 +441,12 @@ if __name__ == "__main__":
     f_top    = lambda x: shift + 0.5 * wm * (1 + delta * np.sin(2 * np.pi * x / Lw))
 
     # Граничные давления
-    P_in = 1.0
-    P_out = 2.0
+    P_in = 15.7
+    P_out = 14.4
 
     # Размер сетки (возьмём умеренный)
     Nx = 100
-    Ny = 20
+    Ny = 40
 
     A, b, p_act, p_full, inside, xc, yc = solve_curved(
         Nx, Ny, Lx, Ly, f_bottom, f_top,
@@ -283,3 +457,7 @@ if __name__ == "__main__":
 
     # Визуализация
     plot_pressure(p_full, Lx, Ly, f_bottom, f_top, title="синусоида.png")
+if __name__ == "__main__":
+    hyperbolic_channel_test()
+    #paralelogram_test()
+    converging_diverging_channel_test()
